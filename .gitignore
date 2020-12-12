@@ -1,0 +1,8 @@
+data*
+protocol_feature*
+config.ini
+genesis.json
+conf*
+*.log
+*.keys
+gen_conf*
