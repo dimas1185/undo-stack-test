@@ -433,7 +433,7 @@ nodeos -e -p producer4 \
   --p2p-peer-address localhost:9878 \
   > nodeos_4.log 2>&1 &
 
-sleep 20
+sleep 100
 cleos get info
 
 cleos get table producer1 producer1 numobjs
