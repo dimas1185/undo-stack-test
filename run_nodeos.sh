@@ -1,4 +1,48 @@
-#!/bin/sh
+#!/bin/bash
+
+NUMBER_OF_PRODUCERS=8
+CHAINBASE_PRODS=6
+DUPLICATE_INDEX=8
+DUPLICATE_CNT=2
+IDLE_TIME=180
+
+function backing_store {
+   if [ $1 -le $CHAINBASE_PRODS ]
+   then
+      echo "chainbase"
+   else
+      echo "rocksdb"
+   fi
+}
+
+function should_duplicate {
+   if [ $1 -eq $DUPLICATE_INDEX ]
+   then
+      echo 1
+   fi
+}
+
+function producer_name {
+   if [ $1 -le 5 ]
+   then
+      NAME="prod.$1"
+   else
+      CNT=$1
+      NAME="prod.5"
+      while [ $CNT -gt 5 ]
+      do
+         CNT=$(( $CNT - 5 ))
+         if [ $CNT -gt 5 ]
+         then
+            NAME="${NAME}.5"
+         else
+            NAME="${NAME}.${CNT}"
+         fi
+      done
+   fi
+
+   echo $NAME
+}
 
 function get_priv_key {
    cat $1 | sed -n -e 's/Private key: //p'
@@ -14,14 +58,20 @@ function activate_feature {
       -d "{\"protocol_features_to_activate\": [\"$2\"]}"
 }
 
-function get_producers {
-   curl --request POST \
-      --url http://127.0.0.1:$1/v1/chain/get_producers \
-      -d '{"--json": "true", "--lower_bound": "", "--limit":"50"}'
+function peers_cl {
+   BASE_PORT=$3
+   for i in $(seq 1 $2)
+   do
+      if [ $i -ne $1 ]
+      then
+         PORT=$(( $BASE_PORT + $i ))
+         echo "--p2p-peer-address 0.0.0.0:$PORT "
+      fi
+   done
 }
 
 pkill nodeos
-rm -rf ./data* ./protocol_features* ./*.keys
+rm -rf ./data* ./protocol_features* ./*.keys ./gen_conf*
 
 pkill keosd
 rm -rf ~/eosio-wallet/df*
@@ -34,26 +84,17 @@ WALLET_PASSWORD=$(cat ./wallet.keys)
 #eosio private key
 cleos wallet import -n df --private-key 5KQwrPbwdL6PhXujxW37FSSQZ1JiwsST4cqQzDeyXtP79zkvFD3
 
-cleos create key -f ./eosio.prods.keys
-PRODS_KEY=$(get_priv_key ./eosio.prods.keys)
-PRODS_PUB_KEY=$(get_pub_key ./eosio.prods.keys)
-cleos wallet import -n df --private-key $PRODS_KEY
+declare -a PRIV_KEYS=()
+declare -a PUB_KEYS=()
 
-cleos create key -f ./eosio.prods2.keys
-PRODS2_KEY=$(get_priv_key ./eosio.prods2.keys)
-PRODS2_PUB_KEY=$(get_pub_key ./eosio.prods2.keys)
-cleos wallet import -n df --private-key $PRODS2_KEY
-
-cleos create key -f ./eosio.prods3.keys
-PRODS3_KEY=$(get_priv_key ./eosio.prods3.keys)
-PRODS3_PUB_KEY=$(get_pub_key ./eosio.prods3.keys)
-cleos wallet import -n df --private-key $PRODS3_KEY
-
-cleos create key -f ./eosio.prods4.keys
-PRODS4_KEY=$(get_priv_key ./eosio.prods4.keys)
-PRODS4_PUB_KEY=$(get_pub_key ./eosio.prods4.keys)
-cleos wallet import -n df --private-key $PRODS4_KEY
-
+for i in $(seq 1 $NUMBER_OF_PRODUCERS)
+do
+   echo "creating keys for producer number $i"
+   cleos create key -f "./eosio.prods${i}.keys"
+   PRIV_KEYS[$i]=$(get_priv_key ./eosio.prods${i}.keys)
+   PUB_KEYS[$i]=$(get_pub_key ./eosio.prods${i}.keys)
+   cleos wallet import -n df --private-key ${PRIV_KEYS[$i]}
+done
 
 cleos create key -f ./eosio.bpay.keys
 cleos wallet import -n df --private-key $(get_priv_key ./eosio.bpay.keys)
@@ -81,61 +122,64 @@ cleos wallet unlock -n df --password $WALLET_PASSWORD
 
 #generate genesis:
 echo "generating genesis..."
-cat ./genesis_template.json | sed -e "s/REPLACE_WITH_PRIVATE_KEY/$PRODS_PUB_KEY/g" > ./genesis.json
+cat ./genesis_template.json | sed -e "s/REPLACE_WITH_PRIVATE_KEY/${PUB_KEYS[1]}/g" > ./genesis.json
 
 echo "generating config..."
-mkdir -p ./gen_conf2
-mkdir -p ./gen_conf3
-mkdir -p ./gen_conf4
-cat ./gen_conf/config_template.ini | sed -e "s/PUB_KEY/$PRODS_PUB_KEY/g" | sed -e "s/PRIV_KEY/$PRODS_KEY/g" > ./gen_conf/config.ini
-cat ./gen_conf/config_template.ini | sed -e "s/PUB_KEY/$PRODS2_PUB_KEY/g" | sed -e "s/PRIV_KEY/$PRODS2_KEY/g" > ./gen_conf2/config.ini
-cat ./gen_conf/config_template.ini | sed -e "s/PUB_KEY/$PRODS3_PUB_KEY/g" | sed -e "s/PRIV_KEY/$PRODS3_KEY/g" > ./gen_conf3/config.ini
-cat ./gen_conf/config_template.ini | sed -e "s/PUB_KEY/$PRODS4_PUB_KEY/g" | sed -e "s/PRIV_KEY/$PRODS4_KEY/g" > ./gen_conf4/config.ini
-
-mkdir -p ./conf2
-mkdir -p ./conf3
-mkdir -p ./conf4
-cat ./config_template.ini | sed -e "s/PUB_KEY/$PRODS_PUB_KEY/g" | sed -e "s/PRIV_KEY/$PRODS_KEY/g" > ./config.ini
-cat ./config_template.ini | sed -e "s/PUB_KEY/$PRODS2_PUB_KEY/g" | sed -e "s/PRIV_KEY/$PRODS2_KEY/g" > ./conf2/config.ini
-cat ./config_template.ini | sed -e "s/PUB_KEY/$PRODS3_PUB_KEY/g" | sed -e "s/PRIV_KEY/$PRODS3_KEY/g" > ./conf3/config.ini
-cat ./config_template.ini | sed -e "s/PUB_KEY/$PRODS4_PUB_KEY/g" | sed -e "s/PRIV_KEY/$PRODS4_KEY/g" > ./conf4/config.ini
+for i in $(seq 1 $NUMBER_OF_PRODUCERS)
+do
+   mkdir -p ./gen_conf${i}
+   mkdir -p ./conf${i}
+   echo "generating genesis config for producer number $i with backing-store $(backing_store $i)"
+   cat ./genesis_config_template.ini | sed -e "s/PUB_KEY/${PUB_KEYS[$i]}/g" | sed -e "s/PRIV_KEY/${PRIV_KEYS[$i]}/g" | sed -e "s/BK_STORE/$(backing_store $i)/g" > ./gen_conf${i}/config.ini
+   cat ./config_template.ini | sed -e "s/PUB_KEY/${PUB_KEYS[$i]}/g" | sed -e "s/PRIV_KEY/${PRIV_KEYS[$i]}/g" | sed -e "s/BK_STORE/$(backing_store $i)/g" > ./conf${i}/config.ini
+   if [ $(should_duplicate $i) ]
+   then
+      for j in $(seq 1 $DUPLICATE_CNT)
+      do
+         echo "making $j duplicate for producer $i"
+         mkdir -p ./gen_conf${i}_${j}
+         mkdir -p ./conf${i}_${j}
+         cp ./gen_conf${i}/config.ini ./gen_conf${i}_${j}/config.ini
+         cp ./conf${i}/config.ini ./conf${i}_${j}/config.ini
+      done
+   fi
+done
 
 
 echo "creating new blockchain from genesis..."
-nodeos --genesis-json ./genesis.json \
-  --data-dir ./data1     \
-  --protocol-features-dir ./protocol_features1 \
-  --config-dir ./gen_conf \
-  > nodeos_1.log 2>&1 &
-nodeos --genesis-json ./genesis.json \
-  --data-dir ./data2     \
-  --protocol-features-dir ./protocol_features2 \
-  --config-dir ./gen_conf2 \
-  > nodeos_2.log 2>&1 &
-nodeos --genesis-json ./genesis.json \
-  --data-dir ./data3     \
-  --protocol-features-dir ./protocol_features3 \
-  --config-dir ./gen_conf3 \
-  > nodeos_3.log 2>&1 &
-nodeos --genesis-json ./genesis.json \
-  --data-dir ./data4     \
-  --protocol-features-dir ./protocol_features4 \
-  --config-dir ./gen_conf4 \
-  > nodeos_4.log 2>&1 &
+for i in $(seq 1 $NUMBER_OF_PRODUCERS)
+do
+   nodeos --genesis-json ./genesis.json \
+          --data-dir ./data${i}     \
+          --protocol-features-dir ./protocol_features${i} \
+          --config-dir ./gen_conf${i} \
+          > nodeos_${i}.log 2>&1 &
+   if [ $(should_duplicate $i) ]
+   then
+      for j in $(seq 1 $DUPLICATE_CNT)
+      do
+         nodeos --genesis-json ./genesis.json \
+               --data-dir ./data${i}_${j}     \
+               --protocol-features-dir ./protocol_features${i}_${j} \
+               --config-dir ./gen_conf${i}_${j} \
+               > nodeos_${i}_${j}.log 2>&1 &
+      done
+   fi
+done
 sleep 3
 pkill nodeos
-
 
 echo "starting eosio"
 nodeos -e -p eosio \
   --data-dir ./data1     \
   --protocol-features-dir ./protocol_features1 \
-  --config-dir . \
+  --config-dir ./conf1 \
   --contracts-console   \
   --disable-replay-opts \
   --http-server-address 0.0.0.0:8888 \
   --p2p-listen-endpoint 0.0.0.0:9876 \
   --p2p-peer-address localhost:9879 \
+  --state-history-endpoint 0.0.0.0:8788 \
   -l ./logging.json \
   >> nodeos_1.log 2>&1 &
 sleep 3
@@ -185,33 +229,20 @@ cleos push action eosio init '["0", "4,SYS"]' -p eosio@active
 cleos push action eosio setpriv '["eosio.msig", 1]' -p eosio
 sleep 3
 
-#100mm
-cleos system newaccount eosio --transfer producer1 $PRODS_PUB_KEY --stake-net "100000000.0000 SYS" --stake-cpu "100000000.0000 SYS" --buy-ram-kbytes 8192
-#100mm
-cleos system newaccount eosio --transfer producer2 $PRODS2_PUB_KEY --stake-net "100000000.0000 SYS" --stake-cpu "100000000.0000 SYS" --buy-ram-kbytes 8192
-#100mm
-cleos system newaccount eosio --transfer producer3 $PRODS3_PUB_KEY --stake-net "100000000.0000 SYS" --stake-cpu "100000000.0000 SYS" --buy-ram-kbytes 8192
-#100mm
-cleos system newaccount eosio --transfer producer4 $PRODS4_PUB_KEY --stake-net "100000000.0000 SYS" --stake-cpu "100000000.0000 SYS" --buy-ram-kbytes 8192
+
+for i in $(seq 1 $NUMBER_OF_PRODUCERS)
+do
+   PROD_NAME=$(producer_name $i)
+   
+   #10mm
+   cleos system newaccount eosio --transfer $PROD_NAME ${PUB_KEYS[$i]} --stake-net "10000000.0000 SYS" --stake-cpu "10000000.0000 SYS" --buy-ram-kbytes 8192
+   cleos system regproducer $PROD_NAME ${PUB_KEYS[$i]} https://dimon${i}.io 840 -p $PROD_NAME
+   cleos system voteproducer prods $PROD_NAME $PROD_NAME -p $PROD_NAME
+done
 
 sleep 3
-cleos system regproducer producer1 $PRODS_PUB_KEY https://dimon1.io 840 -p producer1
-cleos system regproducer producer2 $PRODS2_PUB_KEY https://dimon2.io 840 -p producer2
-cleos system regproducer producer3 $PRODS3_PUB_KEY https://dimon3.io 840 -p producer3
-cleos system regproducer producer4 $PRODS4_PUB_KEY https://dimon4.io 840 -p producer4
 
 cleos system listproducers
-
-cleos system voteproducer prods producer1 producer1 producer2 producer3 producer4 -p producer1
-cleos system voteproducer prods producer2 producer1 producer2 producer3 producer4 -p producer2
-cleos system voteproducer prods producer3 producer1 producer2 producer3 producer4 -p producer3
-cleos system voteproducer prods producer4 producer1 producer2 producer3 producer4 -p producer4
-
-sleep 3
-cleos system listproducers
-#get_producers 8888
-
-sleep 3
 
 #resign eosio and other system accounts
 cleos push action eosio updateauth '{"account": "eosio", "permission": "owner", "parent": "", "auth": {"threshold": 1, "keys": [], "waits": [], "accounts": [{"weight": 1, "permission": {"actor": "eosio.prods", "permission": "active"}}]}}' -p eosio@owner
@@ -248,195 +279,182 @@ sleep 3
 
 pkill nodeos
 
-echo "starting producer1"
-nodeos -e -p producer1 \
-  --data-dir ./data1     \
-  --protocol-features-dir ./protocol_features1 \
-  --config-dir . \
-  --contracts-console   \
-  --disable-replay-opts \
-  --http-server-address 0.0.0.0:8888 \
-  --p2p-listen-endpoint 0.0.0.0:9876 \
-  --p2p-peer-address localhost:9879 \
-  --p2p-peer-address localhost:9876 \
-  --p2p-peer-address localhost:9877 \
-  --p2p-peer-address localhost:9878 \
-  -l ./logging.json \
-  >> nodeos_1.log 2>&1 &
-echo "starting producer2"
-nodeos -e -p producer2 \
-  --data-dir ./data2     \
-  --protocol-features-dir ./protocol_features2 \
-  --config-dir ./conf2 \
-  --contracts-console   \
-  --disable-replay-opts \
-  --http-server-address 0.0.0.0:8889 \
-  --p2p-listen-endpoint 0.0.0.0:9877 \
-  --p2p-peer-address localhost:9876 \
-  --p2p-peer-address localhost:9878 \
-  --p2p-peer-address localhost:9879 \
-  -l ./logging.json \
-  >> nodeos_2.log 2>&1 &
-echo "starting producer3"
-nodeos -e -p producer3 \
-  --data-dir ./data3     \
-  --protocol-features-dir ./protocol_features3 \
-  --config-dir ./conf3 \
-  --contracts-console   \
-  --disable-replay-opts \
-  --http-server-address 0.0.0.0:8890 \
-  --p2p-listen-endpoint 0.0.0.0:9878 \
-  --p2p-peer-address localhost:9876 \
-  --p2p-peer-address localhost:9877 \
-  --p2p-peer-address localhost:9879 \
-  -l ./logging.json \
-  >> nodeos_3.log 2>&1 &
-echo "starting producer4"
-nodeos -e -p producer4 \
-  --data-dir ./data4     \
-  --protocol-features-dir ./protocol_features4 \
-  --config-dir ./conf4 \
-  --contracts-console   \
-  --disable-replay-opts \
-  --http-server-address 0.0.0.0:8891 \
-  --p2p-listen-endpoint 0.0.0.0:9879 \
-  --p2p-peer-address localhost:9876 \
-  --p2p-peer-address localhost:9877 \
-  --p2p-peer-address localhost:9878 \
-  > nodeos_4.log 2>&1 &
+for i in $(seq 1 $NUMBER_OF_PRODUCERS)
+do
+   PROD_NAME=$(producer_name $i)
+   echo "starting producer $PROD_NAME"
+
+   HTTP_PORT=$(( 8887 + $i ))
+   LISTEN_ENDPOINT=$(( 9875 + $i ))
+   PEERS_CL=$(peers_cl $i $NUMBER_OF_PRODUCERS 9875)
+   SH_PORT=$(( 8787 + $i ))
+
+   nodeos -e -p $PROD_NAME \
+         --data-dir ./data${i}     \
+         --protocol-features-dir ./protocol_features${i} \
+         --config-dir ./conf${i} \
+         --contracts-console   \
+         --disable-replay-opts \
+         --http-server-address 0.0.0.0:$HTTP_PORT \
+         --p2p-listen-endpoint 0.0.0.0:$LISTEN_ENDPOINT \
+         $PEERS_CL \
+         --state-history-endpoint 0.0.0.0:$SH_PORT \
+         -l ./logging.json \
+         >> nodeos_${i}.log 2>&1 &
+   
+   if [ $(should_duplicate $i) ]
+   then
+      for j in $(seq 1 $DUPLICATE_CNT)
+      do
+         HTTP_PORT=$(( $HTTP_PORT - 100 + $j ))
+         LISTEN_ENDPOINT=$(( $LISTEN_ENDPOINT - 100 ))
+         SH_PORT=$(( $SH_PORT - 100 ))
+         nodeos -e -p $PROD_NAME \
+               --data-dir ./data${i}_${j}     \
+               --protocol-features-dir ./protocol_features${i}_${j} \
+               --config-dir ./conf${i}_${j} \
+               --contracts-console   \
+               --disable-replay-opts \
+               --http-server-address 0.0.0.0:$HTTP_PORT \
+               --p2p-listen-endpoint 0.0.0.0:$LISTEN_ENDPOINT \
+               $PEERS_CL \
+               $(peers_cl $j $DUPLICATE_CNT 9775) \
+               --state-history-endpoint 0.0.0.0:$SH_PORT \
+               -l ./logging.json \
+               >> nodeos_${i}_${j}.log 2>&1 &
+      done
+   fi
+done
+
 sleep 3
 
 EOS_TEST_CONTRACTS="$HOME/Work/eos/unittests/test-contracts"
 
-cleos set contract producer1 $EOS_TEST_CONTRACTS/get_table_test/
-cleos set contract producer2 $EOS_TEST_CONTRACTS/get_table_test/
-cleos set contract producer3 $EOS_TEST_CONTRACTS/get_table_test/
-cleos set contract producer4 $EOS_TEST_CONTRACTS/get_table_test/
+for i in $(seq 1 $NUMBER_OF_PRODUCERS)
+do
+   cleos set contract $(producer_name $i) $EOS_TEST_CONTRACTS/get_table_test/
+done
 sleep 3
 
 cleos get info
 
-cleos push action producer1 addnumobj '["2"]' -p producer1
-cleos push action producer1 addnumobj '["5"]' -p producer1
-cleos push action producer1 addnumobj '["7"]' -p producer1
-cleos push action producer2 addnumobj '["2"]' -p producer2
-cleos push action producer2 addnumobj '["5"]' -p producer2
-cleos push action producer2 addnumobj '["7"]' -p producer2
-cleos push action producer3 addnumobj '["2"]' -p producer3
-cleos push action producer3 addnumobj '["5"]' -p producer3
-cleos push action producer3 addnumobj '["7"]' -p producer3
-cleos push action producer4 addnumobj '["2"]' -p producer4
-cleos push action producer4 addnumobj '["5"]' -p producer4
-cleos push action producer4 addnumobj '["7"]' -p producer4
+for i in $(seq 1 $NUMBER_OF_PRODUCERS)
+do
+   PROD_NAME=$(producer_name $i)
+   cleos push action $PROD_NAME addnumobj '["2"]' -p $PROD_NAME
+   cleos push action $PROD_NAME addnumobj '["5"]' -p $PROD_NAME
+   cleos push action $PROD_NAME addnumobj '["7"]' -p $PROD_NAME
+   
+   cleos push action $PROD_NAME addhashobj '["firstinput"]' -p $PROD_NAME
+   cleos push action $PROD_NAME addhashobj '["secondinput"]' -p $PROD_NAME
+   cleos push action $PROD_NAME addhashobj '["thirdinput"]' -p $PROD_NAME
+done
 
-sleep 1
+sleep 3
+
+PROD_NAME=$(producer_name 1)
+cleos get table $PROD_NAME $PROD_NAME numobjs
+cleos get table $PROD_NAME $PROD_NAME hashobjs
+
 cleos get info
 
-cleos push action producer1 addhashobj '["firstinput"]' -p producer1
-cleos push action producer1 addhashobj '["secondinput"]' -p producer1
-cleos push action producer1 addhashobj '["thirdinput"]' -p producer1
-cleos push action producer2 addhashobj '["firstinput"]' -p producer2
-cleos push action producer2 addhashobj '["secondinput"]' -p producer2
-cleos push action producer2 addhashobj '["thirdinput"]' -p producer2
-cleos push action producer3 addhashobj '["firstinput"]' -p producer3
-cleos push action producer3 addhashobj '["secondinput"]' -p producer3
-cleos push action producer3 addhashobj '["thirdinput"]' -p producer3
-cleos push action producer4 addhashobj '["firstinput"]' -p producer4
-cleos push action producer4 addhashobj '["secondinput"]' -p producer4
-cleos push action producer4 addhashobj '["thirdinput"]' -p producer4
+for i in $(seq 1 $NUMBER_OF_PRODUCERS)
+do
+   PROD_NAME=$(producer_name $i)
+   cleos push action $PROD_NAME modifynumobj '["0"]' -p $PROD_NAME
+   cleos push action $PROD_NAME erasenumobj '["2"]' -p $PROD_NAME
+done
 
-sleep 1
+sleep 3
 cleos get info
 
-cleos push action producer1 modifynumobj '["0"]' -p producer1
-cleos push action producer2 modifynumobj '["0"]' -p producer2
-cleos push action producer3 modifynumobj '["0"]' -p producer3
+PROD_NAME=$(producer_name 1)
+cleos get table $PROD_NAME $PROD_NAME numobjs
+cleos get table $PROD_NAME $PROD_NAME hashobjs
 
-cleos push action producer1 erasenumobj '["2"]' -p producer1
-cleos push action producer2 erasenumobj '["2"]' -p producer2
-cleos push action producer3 erasenumobj '["2"]' -p producer3
-
-sleep 1
-cleos get info
-
-cleos get table producer1 producer1 numobjs
-cleos get table producer1 producer1 hashobjs
 
 cleos get info
 
 echo "stopping all producers"
 pkill nodeos
 
-ls -lh ./data1/state/undo_stack.dat
-ls -lh ./data2/state/undo_stack.dat
-ls -lh ./data3/state/undo_stack.dat
-ls -lh ./data4/state/undo_stack.dat
+for i in $(seq 1 $NUMBER_OF_PRODUCERS)
+do
+   ls -lh ./data${i}/state/undo_stack.dat
+   if [ $(should_duplicate $i) ]
+   then
+      for j in $(seq 1 $DUPLICATE_CNT)
+      do
+         ls -lh ./data${i}_${j}/state/undo_stack.dat
+      done
+   fi
+done
 
 cp -R ./data1 ./data1_copy
 
 eosio-blocklog --blocks-dir ./data1_copy/blocks --as-json-array | grep "reversible"
 
-echo "restarting producer1"
-nodeos -e -p producer1 \
-  --data-dir ./data1     \
-  --protocol-features-dir ./protocol_features1 \
-  --config-dir . \
-  --contracts-console   \
-  --disable-replay-opts \
-  --http-server-address 0.0.0.0:8888 \
-  --p2p-listen-endpoint 0.0.0.0:9876 \
-  --p2p-peer-address localhost:9879 \
-  --p2p-peer-address localhost:9876 \
-  --p2p-peer-address localhost:9877 \
-  --p2p-peer-address localhost:9878 \
-  -l ./logging.json \
-  >> nodeos_1.log 2>&1 &
-echo "restarting producer2"
-nodeos -e -p producer2 \
-  --data-dir ./data2     \
-  --protocol-features-dir ./protocol_features2 \
-  --config-dir ./conf2 \
-  --contracts-console   \
-  --disable-replay-opts \
-  --http-server-address 0.0.0.0:8889 \
-  --p2p-listen-endpoint 0.0.0.0:9877 \
-  --p2p-peer-address localhost:9876 \
-  --p2p-peer-address localhost:9878 \
-  --p2p-peer-address localhost:9879 \
-  -l ./logging.json \
-  >> nodeos_2.log 2>&1 &
-echo "restarting producer3"
-nodeos -e -p producer3 \
-  --data-dir ./data3     \
-  --protocol-features-dir ./protocol_features3 \
-  --config-dir ./conf3 \
-  --contracts-console   \
-  --disable-replay-opts \
-  --http-server-address 0.0.0.0:8890 \
-  --p2p-listen-endpoint 0.0.0.0:9878 \
-  --p2p-peer-address localhost:9876 \
-  --p2p-peer-address localhost:9877 \
-  --p2p-peer-address localhost:9879 \
-  -l ./logging.json \
-  >> nodeos_3.log 2>&1 &
-echo "restarting producer4"
-nodeos -e -p producer4 \
-  --data-dir ./data4     \
-  --protocol-features-dir ./protocol_features4 \
-  --config-dir ./conf4 \
-  --contracts-console   \
-  --disable-replay-opts \
-  --http-server-address 0.0.0.0:8891 \
-  --p2p-listen-endpoint 0.0.0.0:9879 \
-  --p2p-peer-address localhost:9876 \
-  --p2p-peer-address localhost:9877 \
-  --p2p-peer-address localhost:9878 \
-  > nodeos_4.log 2>&1 &
+for i in $(seq 1 $NUMBER_OF_PRODUCERS)
+do
+   PROD_NAME=$(producer_name $i)
+   echo "restarting producer $PROD_NAME"
 
-sleep 100
+   HTTP_PORT=$(( 8887 + $i ))
+   LISTEN_ENDPOINT=$(( 9875 + $i ))
+   PEERS_CL=$(peers_cl $i $NUMBER_OF_PRODUCERS 9875)
+   SH_PORT=$(( 8787 + $i ))
+
+   nodeos -e -p $PROD_NAME \
+         --data-dir ./data${i}     \
+         --protocol-features-dir ./protocol_features${i} \
+         --config-dir ./conf${i} \
+         --contracts-console   \
+         --disable-replay-opts \
+         --http-server-address 0.0.0.0:$HTTP_PORT \
+         --p2p-listen-endpoint 0.0.0.0:$LISTEN_ENDPOINT \
+         $PEERS_CL \
+         --state-history-endpoint 0.0.0.0:$SH_PORT \
+         -l ./logging.json \
+         >> nodeos_${i}.log 2>&1 &
+   
+   if [ $(should_duplicate $i) ]
+   then
+      for j in $(seq 1 $DUPLICATE_CNT)
+      do
+         HTTP_PORT=$(( $HTTP_PORT - 100 + $j ))
+         LISTEN_ENDPOINT=$(( $LISTEN_ENDPOINT - 100 ))
+         SH_PORT=$(( $SH_PORT - 100 ))
+         nodeos -e -p $PROD_NAME \
+               --data-dir ./data${i}_${j}     \
+               --protocol-features-dir ./protocol_features${i}_${j} \
+               --config-dir ./conf${i}_${j} \
+               --contracts-console   \
+               --disable-replay-opts \
+               --http-server-address 0.0.0.0:$HTTP_PORT \
+               --p2p-listen-endpoint 0.0.0.0:$LISTEN_ENDPOINT \
+               $PEERS_CL \
+               $(peers_cl $j $DUPLICATE_CNT 9775) \
+               --state-history-endpoint 0.0.0.0:$SH_PORT \
+               -l ./logging.json \
+               >> nodeos_${i}_${j}.log 2>&1 &
+      done
+   fi
+done
+
+ELAPSED=0
+while [ $ELAPSED -lt 100 ]
+do
+   sleep $(( $IDLE_TIME / 100 ))
+   ELAPSED=$(( $ELAPSED + 1 ))
+   echo -en "\rruning idle blockchain for $IDLE_TIME seconds $(( $ELAPSED ))%..."
+done
+
 cleos get info
 
-cleos get table producer1 producer1 numobjs
-cleos get table producer1 producer1 hashobjs
+PROD_NAME=$(producer_name 1)
+   cleos get table $PROD_NAME $PROD_NAME numobjs
+   cleos get table $PROD_NAME $PROD_NAME hashobjs
 
 pkill nodeos
+
+grep "fork or replay" ./nodeos*
