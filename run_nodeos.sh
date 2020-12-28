@@ -1,5 +1,6 @@
 #!/bin/bash
-
+EOSIO_CONTRACTS_DIRECTORY="$HOME/Work/eosio.contracts/build/contracts"
+EOS_TEST_CONTRACTS="$HOME/Work/eos/unittests/test-contracts"
 NUMBER_OF_PRODUCERS=8
 CHAINBASE_PRODS=6
 DUPLICATE_INDEX=8
@@ -201,8 +202,6 @@ activate_feature 8888 "0ec7e080177b2c02b278d5088611686b49d739925a92d9bfcacd7fc6b
 
 sleep 3
 
-EOSIO_CONTRACTS_DIRECTORY="$HOME/Work/eosio.contracts/build/contracts"
-
 cleos set contract eosio $EOSIO_CONTRACTS_DIRECTORY/eosio.boot/
 
 sleep 5
@@ -327,8 +326,6 @@ do
 done
 
 sleep 3
-
-EOS_TEST_CONTRACTS="$HOME/Work/eos/unittests/test-contracts"
 
 for i in $(seq 1 $NUMBER_OF_PRODUCERS)
 do
