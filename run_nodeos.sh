@@ -1,11 +1,13 @@
 #!/bin/bash
-EOSIO_CONTRACTS_DIRECTORY="$HOME/Work/eosio.contracts/build/contracts"
+#EOSIO_CONTRACTS_DIRECTORY="$HOME/Work/eosio.contracts/build/contracts"
+EOSIO_CONTRACTS_DIRECTORY="$HOME/Downloads/build/contracts"
 EOS_TEST_CONTRACTS="$HOME/Work/eos/unittests/test-contracts"
 NUMBER_OF_PRODUCERS=8
 CHAINBASE_PRODS=6
 DUPLICATE_INDEX=8
 DUPLICATE_CNT=2
-IDLE_TIME=200
+IDLE_TIME=360
+OLD_EOS_PATH=$HOME/Work/eos_copy/build/bin
 
 function backing_store {
    if [ $1 -le $CHAINBASE_PRODS ]
@@ -56,7 +58,13 @@ function get_pub_key {
 function activate_feature {
    curl --request POST \
       --url http://127.0.0.1:$1/v1/producer/schedule_protocol_feature_activations \
-      -d "{\"protocol_features_to_activate\": [\"$2\"]}"
+      -d "{\"protocol_features_to_activate\": [\"$2\"]}" | python -m json.tool
+}
+
+function send_trx {
+   curl --request POST \
+        --url http://127.0.0.1:$1/v1/chain/send_transaction \
+        -d ''"$2"'' | python -m json.tool
 }
 
 function peers_cl {
@@ -71,8 +79,28 @@ function peers_cl {
    done
 }
 
+function old_nodeos {
+   if [ $1 -le $(( $NUMBER_OF_PRODUCERS / 2 )) ]
+   then
+      echo 1
+   fi
+}
+
+function nodeos_path {
+   if [ $(old_nodeos $1) ]
+   then
+      echo "$OLD_EOS_PATH/nodeos"
+   else
+      echo "nodeos"
+   fi
+}
+
+function chain_id {
+   cleos get info | sed -n 's/[[:space:]]*\"chain_id\":[[:space:]]*\"\(.*\)\",[[:space:]]*/\1/p'
+}
+
 pkill nodeos
-rm -rf ./data* ./protocol_features* ./*.keys ./gen_conf*
+rm -rf ./data* ./protocol_features* ./*.keys ./gen_conf* ./*.log ./*trx.json
 
 pkill keosd
 rm -rf ~/eosio-wallet/df*
@@ -121,9 +149,9 @@ cleos wallet import -n df --private-key $(get_priv_key ./eosio.rex.keys)
 cleos wallet open -n df
 cleos wallet unlock -n df --password $WALLET_PASSWORD
 
-#generate genesis:
+#generate genesis. starting from 5th as it is 2.1 nodeos
 echo "generating genesis..."
-cat ./genesis_template.json | sed -e "s/REPLACE_WITH_PRIVATE_KEY/${PUB_KEYS[1]}/g" > ./genesis.json
+cat ./genesis_template.json | sed -e "s/REPLACE_WITH_PRIVATE_KEY/${PUB_KEYS[5]}/g" > ./genesis.json
 
 echo "generating config..."
 for i in $(seq 1 $NUMBER_OF_PRODUCERS)
@@ -132,7 +160,17 @@ do
    mkdir -p ./conf${i}
    echo "generating genesis config for producer number $i with backing-store $(backing_store $i)"
    cat ./genesis_config_template.ini | sed -e "s/PUB_KEY/${PUB_KEYS[$i]}/g" | sed -e "s/PRIV_KEY/${PRIV_KEYS[$i]}/g" | sed -e "s/BK_STORE/$(backing_store $i)/g" > ./gen_conf${i}/config.ini
+   if [ $(old_nodeos $i) ]
+   then
+      cat ./gen_conf${i}/config.ini | sed -e "s/backing-store/#backing-store/g" > ./gen_conf${i}/config2.ini
+      cp ./gen_conf${i}/config2.ini ./gen_conf${i}/config.ini
+   fi
    cat ./config_template.ini | sed -e "s/PUB_KEY/${PUB_KEYS[$i]}/g" | sed -e "s/PRIV_KEY/${PRIV_KEYS[$i]}/g" | sed -e "s/BK_STORE/$(backing_store $i)/g" > ./conf${i}/config.ini
+   if [ $(old_nodeos $i) ]
+   then
+      cat ./conf${i}/config.ini | sed -e "s/backing-store/#backing-store/g" > ./conf${i}/config2.ini
+      cp ./conf${i}/config2.ini ./conf${i}/config.ini
+   fi
    if [ $(should_duplicate $i) ]
    then
       for j in $(seq 1 $DUPLICATE_CNT)
@@ -150,7 +188,8 @@ done
 echo "creating new blockchain from genesis..."
 for i in $(seq 1 $NUMBER_OF_PRODUCERS)
 do
-   nodeos --genesis-json ./genesis.json \
+   echo "producer $i"
+   $(nodeos_path $i) --genesis-json ./genesis.json \
           --data-dir ./data${i}     \
           --protocol-features-dir ./protocol_features${i} \
           --config-dir ./gen_conf${i} \
@@ -159,7 +198,8 @@ do
    then
       for j in $(seq 1 $DUPLICATE_CNT)
       do
-         nodeos --genesis-json ./genesis.json \
+         echo "producer $i duplicate $j"
+         $(nodeos_path $i) --genesis-json ./genesis.json \
                --data-dir ./data${i}_${j}     \
                --protocol-features-dir ./protocol_features${i}_${j} \
                --config-dir ./gen_conf${i}_${j} \
@@ -170,22 +210,21 @@ done
 sleep 3
 pkill nodeos
 
-echo "starting eosio"
-nodeos -e -p eosio \
-  --data-dir ./data1     \
-  --protocol-features-dir ./protocol_features1 \
-  --config-dir ./conf1 \
+echo "starting eosio on 5th producer"
+$(nodeos_path 5) -e -p eosio \
+  --data-dir ./data5     \
+  --protocol-features-dir ./protocol_features5 \
+  --config-dir ./conf5 \
   --contracts-console   \
   --disable-replay-opts \
   --http-server-address 0.0.0.0:8888 \
   --p2p-listen-endpoint 0.0.0.0:9876 \
-  --p2p-peer-address localhost:9879 \
   --state-history-endpoint 0.0.0.0:8788 \
   -l ./logging.json \
-  >> nodeos_1.log 2>&1 &
+  >> nodeos_5.log 2>&1 &
 sleep 3
 
-
+echo "creating system accounts..."
 cleos create account eosio eosio.bpay $(get_pub_key eosio.bpay.keys) #-p eosio@active
 cleos create account eosio eosio.msig $(get_pub_key eosio.msig.keys) #-p eosio@active
 cleos create account eosio eosio.names $(get_pub_key eosio.names.keys) #-p eosio@active
@@ -202,15 +241,15 @@ activate_feature 8888 "0ec7e080177b2c02b278d5088611686b49d739925a92d9bfcacd7fc6b
 
 sleep 3
 
-cleos set contract eosio $EOSIO_CONTRACTS_DIRECTORY/eosio.boot/
+#cleos set contract eosio $EOSIO_CONTRACTS_DIRECTORY/eosio.boot/
 
-sleep 5
+#sleep 5
 
 #KV_DATABASE
-cleos push action eosio activate '["825ee6288fb1373eab1b5187ec2f04f6eacb39cb3a97f356a07c91622dd61d16"]' -p eosio
+#cleos push action eosio activate '["825ee6288fb1373eab1b5187ec2f04f6eacb39cb3a97f356a07c91622dd61d16"]' -p eosio
 #WTMSIG_BLOCK_SIGNATURES
-cleos push action eosio activate '["299dcb6af692324b899b39f16d5a530a33062804e41f09dc97e9f156b4476707"]' -p eosio
-sleep 5
+#cleos push action eosio activate '["299dcb6af692324b899b39f16d5a530a33062804e41f09dc97e9f156b4476707"]' -p eosio
+#sleep 5
 
 cleos set contract eosio $EOSIO_CONTRACTS_DIRECTORY/eosio.system/
 sleep 3
@@ -222,7 +261,7 @@ sleep 3
 #10bln
 cleos push action eosio.token create '[ "eosio", "10000000000.0000 SYS" ]' -p eosio.token
 #1bln
-cleos push action eosio.token issue '[ "eosio", "1000000000.0000 SYS", "memo" ]' -p eosio
+cleos push action eosio.token issue '[ "eosio", "10000000000.0000 SYS", "memo" ]' -p eosio
 cleos push action eosio init '["0", "4,SYS"]' -p eosio@active
 
 cleos push action eosio setpriv '["eosio.msig", 1]' -p eosio
@@ -239,9 +278,22 @@ do
    cleos system voteproducer prods $PROD_NAME $PROD_NAME -p $PROD_NAME
 done
 
-sleep 3
+cleos transfer eosio prod.1 "1000.0000 SYS" -p eosio
+cleos transfer eosio prod.2 "1000.0000 SYS" -p eosio
 
 cleos system listproducers
+
+# cleos transfer eosio eosio.saving "0.1 SYS" -p eosio -d --json-file ./unsigned_trx.json
+
+# cat ./unsigned_trx.json | xargs -0 -J {} cleos convert pack_transaction --pack-action-data {} > ./packed_trx.json
+# echo "packed transaction:"
+# cat ./packed_trx.json
+
+# cat ./packed_trx.json | sed -e "s/\(\"packed_trx\":[[:space:]]*\".*\)\(\"\)/\100000000\2/g" > ./packed_trail_trx.json
+# echo "adding trailing zeros to unsigned trx:"
+# cat ./packed_trail_trx.json
+
+# send_trx 8888 ''"$(cat ./packed_trail_trx.json)"''
 
 #resign eosio and other system accounts
 cleos push action eosio updateauth '{"account": "eosio", "permission": "owner", "parent": "", "auth": {"threshold": 1, "keys": [], "waits": [], "accounts": [{"weight": 1, "permission": {"actor": "eosio.prods", "permission": "active"}}]}}' -p eosio@owner
@@ -288,7 +340,7 @@ do
    PEERS_CL=$(peers_cl $i $NUMBER_OF_PRODUCERS 9875)
    SH_PORT=$(( 8787 + $i ))
 
-   nodeos -e -p $PROD_NAME \
+   $(nodeos_path $i) -e -p $PROD_NAME \
          --data-dir ./data${i}     \
          --protocol-features-dir ./protocol_features${i} \
          --config-dir ./conf${i} \
@@ -308,7 +360,7 @@ do
          HTTP_PORT=$(( $HTTP_PORT - 100 + $j ))
          LISTEN_ENDPOINT=$(( $LISTEN_ENDPOINT - 100 ))
          SH_PORT=$(( $SH_PORT - 100 ))
-         nodeos -e -p $PROD_NAME \
+         $(nodeos_path $i) -e -p $PROD_NAME \
                --data-dir ./data${i}_${j}     \
                --protocol-features-dir ./protocol_features${i}_${j} \
                --config-dir ./conf${i}_${j} \
@@ -325,11 +377,11 @@ do
    fi
 done
 
-sleep 3
+sleep 200
 
 for i in $(seq 1 $NUMBER_OF_PRODUCERS)
 do
-   cleos set contract $(producer_name $i) $EOS_TEST_CONTRACTS/get_table_test/
+   cleos --url http://127.0.0.1:8892/ set contract $(producer_name $i) $EOS_TEST_CONTRACTS/get_table_test/
 done
 sleep 3
 
@@ -338,39 +390,78 @@ cleos get info
 for i in $(seq 1 $NUMBER_OF_PRODUCERS)
 do
    PROD_NAME=$(producer_name $i)
-   cleos push action $PROD_NAME addnumobj '["2"]' -p $PROD_NAME
-   cleos push action $PROD_NAME addnumobj '["5"]' -p $PROD_NAME
-   cleos push action $PROD_NAME addnumobj '["7"]' -p $PROD_NAME
+   cleos --url http://127.0.0.1:8892/ push action $PROD_NAME addnumobj '["2"]' -p $PROD_NAME
+   cleos --url http://127.0.0.1:8892/ push action $PROD_NAME addnumobj '["5"]' -p $PROD_NAME 
+   cleos --url http://127.0.0.1:8892/ push action $PROD_NAME addnumobj '["7"]' -p $PROD_NAME
    
-   cleos push action $PROD_NAME addhashobj '["firstinput"]' -p $PROD_NAME
-   cleos push action $PROD_NAME addhashobj '["secondinput"]' -p $PROD_NAME
-   cleos push action $PROD_NAME addhashobj '["thirdinput"]' -p $PROD_NAME
+   cleos --url http://127.0.0.1:8892/ push action $PROD_NAME addhashobj '["firstinput"]' -p $PROD_NAME
+   cleos --url http://127.0.0.1:8892/ push action $PROD_NAME addhashobj '["secondinput"]' -p $PROD_NAME
+   cleos --url http://127.0.0.1:8892/ push action $PROD_NAME addhashobj '["thirdinput"]' -p $PROD_NAME
 done
 
 sleep 3
 
 PROD_NAME=$(producer_name 1)
-cleos get table $PROD_NAME $PROD_NAME numobjs
-cleos get table $PROD_NAME $PROD_NAME hashobjs
+cleos --url http://127.0.0.1:8892/ get table $PROD_NAME $PROD_NAME numobjs
+cleos --url http://127.0.0.1:8892/ get table $PROD_NAME $PROD_NAME hashobjs
 
 cleos get info
 
 for i in $(seq 1 $NUMBER_OF_PRODUCERS)
 do
    PROD_NAME=$(producer_name $i)
-   cleos push action $PROD_NAME modifynumobj '["0"]' -p $PROD_NAME
-   cleos push action $PROD_NAME erasenumobj '["2"]' -p $PROD_NAME
+   cleos --url http://127.0.0.1:8892/ push action $PROD_NAME modifynumobj '["0"]' -p $PROD_NAME
+   cleos --url http://127.0.0.1:8892/ push action $PROD_NAME erasenumobj '["2"]' -p $PROD_NAME
 done
 
 sleep 3
 cleos get info
 
 PROD_NAME=$(producer_name 1)
-cleos get table $PROD_NAME $PROD_NAME numobjs
-cleos get table $PROD_NAME $PROD_NAME hashobjs
+cleos --url http://127.0.0.1:8892/ get table $PROD_NAME $PROD_NAME numobjs
+cleos --url http://127.0.0.1:8892/ get table $PROD_NAME $PROD_NAME hashobjs
 
 
 cleos get info
+
+echo "get balance:"
+cleos get currency balance eosio.token prod.1 SYS
+cleos get currency balance eosio.token prod.2 SYS
+echo "-----------"
+
+#sleep 200
+
+#sending to v2.0.9
+cleos --url http://127.0.0.1:8888/ transfer prod.1 prod.2 "0.1 SYS" -p prod.1 -d --json-file ./unsigned_trx.json
+
+cat ./unsigned_trx.json | xargs -0 -J {} cleos convert pack_transaction --pack-action-data {} > ./packed_trx.json
+echo "packed transaction:"
+cat ./packed_trx.json
+
+cat ./packed_trx.json | sed -e "s/\(\"packed_trx\":[[:space:]]*\".*\)\(\"\)/\100000000\2/g" > ./packed_trail_trx.json
+echo "adding trailing zeros to unsigned trx:"
+cat ./packed_trail_trx.json
+
+send_trx 8888 ''"$(cat ./packed_trail_trx.json)"''
+
+sleep 3
+
+#sending to v2.1.0
+cleos --url http://127.0.0.1:8892/ transfer prod.2 prod.1 "2.1 SYS" -p prod.2 -d --json-file ./unsigned_trx.json
+
+cat ./unsigned_trx.json | xargs -0 -J {} cleos convert pack_transaction --pack-action-data {} > ./packed_trx.json
+echo "packed transaction:"
+cat ./packed_trx.json
+
+cat ./packed_trx.json | sed -e "s/\(\"packed_trx\":[[:space:]]*\".*\)\(\"\)/\100000000\2/g" > ./packed_trail_trx.json
+echo "adding trailing zeros to unsigned trx:"
+cat ./packed_trail_trx.json
+
+send_trx 8888 ''"$(cat ./packed_trail_trx.json)"''
+
+sleep 5
+cleos --url http://127.0.0.1:8888/ get info
+cleos --url http://127.0.0.1:8892/ get info
 
 echo "stopping all producers"
 pkill nodeos
@@ -387,9 +478,9 @@ do
    fi
 done
 
-cp -R ./data1 ./data1_copy
+cp -R ./data7 ./data7_copy
 
-eosio-blocklog --blocks-dir ./data1_copy/blocks --as-json-array | grep "reversible"
+eosio-blocklog --blocks-dir ./data7_copy/blocks --as-json-array | grep "reversible"
 
 for i in $(seq 1 $NUMBER_OF_PRODUCERS)
 do
@@ -401,7 +492,7 @@ do
    PEERS_CL=$(peers_cl $i $NUMBER_OF_PRODUCERS 9875)
    SH_PORT=$(( 8787 + $i ))
 
-   nodeos -e -p $PROD_NAME \
+   $(nodeos_path $i) -e -p $PROD_NAME \
          --data-dir ./data${i}     \
          --protocol-features-dir ./protocol_features${i} \
          --config-dir ./conf${i} \
@@ -421,7 +512,7 @@ do
          HTTP_PORT=$(( $HTTP_PORT - 100 + $j ))
          LISTEN_ENDPOINT=$(( $LISTEN_ENDPOINT - 100 ))
          SH_PORT=$(( $SH_PORT - 100 ))
-         nodeos -e -p $PROD_NAME \
+         $(nodeos_path $i) -e -p $PROD_NAME \
                --data-dir ./data${i}_${j}     \
                --protocol-features-dir ./protocol_features${i}_${j} \
                --config-dir ./conf${i}_${j} \
@@ -449,9 +540,12 @@ done
 cleos get info
 
 PROD_NAME=$(producer_name 1)
-   cleos get table $PROD_NAME $PROD_NAME numobjs
-   cleos get table $PROD_NAME $PROD_NAME hashobjs
+   cleos --url http://127.0.0.1:8892/ get table $PROD_NAME $PROD_NAME numobjs
+   cleos --url http://127.0.0.1:8892/ get table $PROD_NAME $PROD_NAME hashobjs
 
 pkill nodeos
 
+echo "forks:"
 grep "fork or replay" ./nodeos*
+echo "errors:"
+grep "error" ./nodeos* | grep -v "connection failed" | grep -v "Closing connection"

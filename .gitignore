@@ -6,3 +6,4 @@ conf*
 *.log
 *.keys
 gen_conf*
+*trx.json
