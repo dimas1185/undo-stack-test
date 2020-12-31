@@ -283,18 +283,6 @@ cleos transfer eosio prod.2 "1000.0000 SYS" -p eosio
 
 cleos system listproducers
 
-# cleos transfer eosio eosio.saving "0.1 SYS" -p eosio -d --json-file ./unsigned_trx.json
-
-# cat ./unsigned_trx.json | xargs -0 -J {} cleos convert pack_transaction --pack-action-data {} > ./packed_trx.json
-# echo "packed transaction:"
-# cat ./packed_trx.json
-
-# cat ./packed_trx.json | sed -e "s/\(\"packed_trx\":[[:space:]]*\".*\)\(\"\)/\100000000\2/g" > ./packed_trail_trx.json
-# echo "adding trailing zeros to unsigned trx:"
-# cat ./packed_trail_trx.json
-
-# send_trx 8888 ''"$(cat ./packed_trail_trx.json)"''
-
 #resign eosio and other system accounts
 cleos push action eosio updateauth '{"account": "eosio", "permission": "owner", "parent": "", "auth": {"threshold": 1, "keys": [], "waits": [], "accounts": [{"weight": 1, "permission": {"actor": "eosio.prods", "permission": "active"}}]}}' -p eosio@owner
 cleos push action eosio updateauth '{"account": "eosio", "permission": "active", "parent": "owner", "auth": {"threshold": 1, "keys": [], "waits": [], "accounts": [{"weight": 1, "permission": {"actor": "eosio.prods", "permission": "active"}}]}}' -p eosio@active
@@ -379,49 +367,6 @@ done
 
 sleep 200
 
-for i in $(seq 1 $NUMBER_OF_PRODUCERS)
-do
-   cleos --url http://127.0.0.1:8892/ set contract $(producer_name $i) $EOS_TEST_CONTRACTS/get_table_test/
-done
-sleep 3
-
-cleos get info
-
-for i in $(seq 1 $NUMBER_OF_PRODUCERS)
-do
-   PROD_NAME=$(producer_name $i)
-   cleos --url http://127.0.0.1:8892/ push action $PROD_NAME addnumobj '["2"]' -p $PROD_NAME
-   cleos --url http://127.0.0.1:8892/ push action $PROD_NAME addnumobj '["5"]' -p $PROD_NAME 
-   cleos --url http://127.0.0.1:8892/ push action $PROD_NAME addnumobj '["7"]' -p $PROD_NAME
-   
-   cleos --url http://127.0.0.1:8892/ push action $PROD_NAME addhashobj '["firstinput"]' -p $PROD_NAME
-   cleos --url http://127.0.0.1:8892/ push action $PROD_NAME addhashobj '["secondinput"]' -p $PROD_NAME
-   cleos --url http://127.0.0.1:8892/ push action $PROD_NAME addhashobj '["thirdinput"]' -p $PROD_NAME
-done
-
-sleep 3
-
-PROD_NAME=$(producer_name 1)
-cleos --url http://127.0.0.1:8892/ get table $PROD_NAME $PROD_NAME numobjs
-cleos --url http://127.0.0.1:8892/ get table $PROD_NAME $PROD_NAME hashobjs
-
-cleos get info
-
-for i in $(seq 1 $NUMBER_OF_PRODUCERS)
-do
-   PROD_NAME=$(producer_name $i)
-   cleos --url http://127.0.0.1:8892/ push action $PROD_NAME modifynumobj '["0"]' -p $PROD_NAME
-   cleos --url http://127.0.0.1:8892/ push action $PROD_NAME erasenumobj '["2"]' -p $PROD_NAME
-done
-
-sleep 3
-cleos get info
-
-PROD_NAME=$(producer_name 1)
-cleos --url http://127.0.0.1:8892/ get table $PROD_NAME $PROD_NAME numobjs
-cleos --url http://127.0.0.1:8892/ get table $PROD_NAME $PROD_NAME hashobjs
-
-
 cleos get info
 
 echo "get balance:"
@@ -460,74 +405,7 @@ cat ./packed_trail_trx.json
 send_trx 8888 ''"$(cat ./packed_trail_trx.json)"''
 
 sleep 5
-cleos --url http://127.0.0.1:8888/ get info
-cleos --url http://127.0.0.1:8892/ get info
-
-echo "stopping all producers"
-pkill nodeos
-
-for i in $(seq 1 $NUMBER_OF_PRODUCERS)
-do
-   ls -lh ./data${i}/state/undo_stack.dat
-   if [ $(should_duplicate $i) ]
-   then
-      for j in $(seq 1 $DUPLICATE_CNT)
-      do
-         ls -lh ./data${i}_${j}/state/undo_stack.dat
-      done
-   fi
-done
-
-cp -R ./data7 ./data7_copy
-
-eosio-blocklog --blocks-dir ./data7_copy/blocks --as-json-array | grep "reversible"
-
-for i in $(seq 1 $NUMBER_OF_PRODUCERS)
-do
-   PROD_NAME=$(producer_name $i)
-   echo "restarting producer $PROD_NAME"
-
-   HTTP_PORT=$(( 8887 + $i ))
-   LISTEN_ENDPOINT=$(( 9875 + $i ))
-   PEERS_CL=$(peers_cl $i $NUMBER_OF_PRODUCERS 9875)
-   SH_PORT=$(( 8787 + $i ))
-
-   $(nodeos_path $i) -e -p $PROD_NAME \
-         --data-dir ./data${i}     \
-         --protocol-features-dir ./protocol_features${i} \
-         --config-dir ./conf${i} \
-         --contracts-console   \
-         --disable-replay-opts \
-         --http-server-address 0.0.0.0:$HTTP_PORT \
-         --p2p-listen-endpoint 0.0.0.0:$LISTEN_ENDPOINT \
-         $PEERS_CL \
-         --state-history-endpoint 0.0.0.0:$SH_PORT \
-         -l ./logging.json \
-         >> nodeos_${i}.log 2>&1 &
-   
-   if [ $(should_duplicate $i) ]
-   then
-      for j in $(seq 1 $DUPLICATE_CNT)
-      do
-         HTTP_PORT=$(( $HTTP_PORT - 100 + $j ))
-         LISTEN_ENDPOINT=$(( $LISTEN_ENDPOINT - 100 ))
-         SH_PORT=$(( $SH_PORT - 100 ))
-         $(nodeos_path $i) -e -p $PROD_NAME \
-               --data-dir ./data${i}_${j}     \
-               --protocol-features-dir ./protocol_features${i}_${j} \
-               --config-dir ./conf${i}_${j} \
-               --contracts-console   \
-               --disable-replay-opts \
-               --http-server-address 0.0.0.0:$HTTP_PORT \
-               --p2p-listen-endpoint 0.0.0.0:$LISTEN_ENDPOINT \
-               $PEERS_CL \
-               $(peers_cl $j $DUPLICATE_CNT 9775) \
-               --state-history-endpoint 0.0.0.0:$SH_PORT \
-               -l ./logging.json \
-               >> nodeos_${i}_${j}.log 2>&1 &
-      done
-   fi
-done
+cleos get info
 
 ELAPSED=0
 while [ $ELAPSED -lt 100 ]
@@ -538,10 +416,6 @@ do
 done
 
 cleos get info
-
-PROD_NAME=$(producer_name 1)
-   cleos --url http://127.0.0.1:8892/ get table $PROD_NAME $PROD_NAME numobjs
-   cleos --url http://127.0.0.1:8892/ get table $PROD_NAME $PROD_NAME hashobjs
 
 pkill nodeos
 
